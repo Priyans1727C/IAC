@@ -1,0 +1,90 @@
+---
+- name: Install Nagios Monitoring Server
+  hosts: web
+  become: yes
+
+  vars:
+    nagios_user: nagiosadmin
+    nagios_password: nagios123
+
+  tasks:
+
+    - name: Install dependencies
+      apt:
+        name:
+          - apache2
+          - php
+          - libapache2-mod-php
+          - php-gd
+          - openssl
+          - build-essential
+          - libgd-dev
+          - unzip
+          - wget
+        state: present
+        update_cache: yes
+
+    - name: Change Apache listening port to 8080
+      replace:
+        path: /etc/apache2/ports.conf
+        regexp: '^Listen 80'
+        replace: 'Listen 8080'
+
+    - name: Change Apache default VirtualHost to port 8080
+      replace:
+        path: /etc/apache2/sites-enabled/000-default.conf
+        regexp: '<VirtualHost \\*:80>'
+        replace: '<VirtualHost *:8080>'
+
+    - name: Restart apache to apply new port
+      service:
+        name: apache2
+        state: restarted
+
+    - name: Download Nagios Core
+      get_url:
+        url: "https://assets.nagios.com/downloads/nagioscore/releases/nagios-4.5.5.tar.gz"
+        dest: /tmp/nagios.tar.gz
+
+    - name: Extract Nagios Core
+      unarchive:
+        src: /tmp/nagios.tar.gz
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Compile and install Nagios Core
+      shell: |
+        cd /tmp/nagios-4.*
+        ./configure --with-httpd-conf=/etc/apache2/sites-enabled
+        make all
+        make install-groups-users
+        usermod -aG nagios www-data
+        make install
+        make install-daemoninit
+        make install-commandmode
+        make install-config
+        make install-webconf
+      args:
+        warn: false
+
+    - name: Create Nagios admin user
+      shell: htpasswd -b -c /usr/local/nagios/etc/htpasswd.users {{ nagios_user }} "{{ nagios_password }}"
+      args:
+        warn: false
+
+    - name: Enable Apache modules
+      shell: a2enmod cgi rewrite
+      args:
+        warn: false
+
+    - name: Restart Apache & Nagios
+      service:
+        name: apache2
+        state: restarted
+        enabled: yes
+
+    - name: Start Nagios service
+      service:
+        name: nagios
+        state: started
+        enabled: yes

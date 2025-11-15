@@ -1,0 +1,108 @@
+- name: Deploy React App on Ubuntu via Ansible
+  hosts: web
+  become: yes
+
+  vars:
+    repo_url: "https://github.com/Priyans1727C/urban_oven.git"
+    app_dir: "/var/www/urban_oven"
+    nginx_conf: "/etc/nginx/sites-available/urban_oven"
+
+  tasks:
+
+    - name: Install required packages
+      apt:
+        name:
+          - git
+          - curl
+          - nginx
+          - rsync
+        state: present
+        update_cache: yes
+
+    - name: Install Node.js 18.x
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+        apt-get install -y nodejs
+      args:
+        warn: false
+
+    - name: Remove old app folder if exists
+      file:
+        path: "{{ app_dir }}"
+        state: absent
+
+    - name: Clone the React project from GitHub
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: main
+
+    - name: Install node modules
+      shell: |
+        cd {{ app_dir }}
+        npm install
+      args:
+        chdir: "{{ app_dir }}"
+
+    - name: Build React project
+      shell: |
+        cd {{ app_dir }}
+        npm run build
+      args:
+        chdir: "{{ app_dir }}"
+
+    - name: Create target directory for nginx
+      file:
+        path: "/var/www/urban_oven"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+
+    - name: Copy built files to nginx directory
+      synchronize:
+        src: "{{ app_dir }}/dist/"
+        dest: "/var/www/urban_oven/"
+        recursive: yes
+        delete: yes
+
+    - name: Set correct permissions
+      file:
+        path: "/var/www/urban_oven"
+        owner: www-data
+        group: www-data
+        mode: '0755'
+        recurse: yes
+
+    - name: Create Nginx configuration for React app
+      copy:
+        dest: "{{ nginx_conf }}"
+        content: |
+          server {
+              listen 80;
+              server_name _;
+
+              root /var/www/urban_oven;
+              index index.html;
+
+              location / {
+                  try_files $uri /index.html;
+              }
+          }
+
+    - name: Enable nginx site
+      file:
+        src: "{{ nginx_conf }}"
+        dest: "/etc/nginx/sites-enabled/urban_oven"
+        state: link
+
+    - name: Remove default nginx site
+      file:
+        path: "/etc/nginx/sites-enabled/default"
+        state: absent
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+        enabled: yes
