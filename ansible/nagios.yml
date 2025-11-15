@@ -6,6 +6,7 @@
   vars:
     nagios_user: nagiosadmin
     nagios_password: nagios123
+    apache_port: 8090
 
   tasks:
 
@@ -21,25 +22,34 @@
           - libgd-dev
           - unzip
           - wget
+          - monitoring-plugins
+          - nagios-nrpe-plugin
         state: present
         update_cache: yes
 
-    - name: Change Apache listening port to 8080
+    # ------------ FIXED PORT CHANGE (SAFE) ------------
+
+    - name: Remove any invalid Listen lines
       replace:
         path: /etc/apache2/ports.conf
-        regexp: '^Listen 80'
-        replace: 'Listen 8080'
+        regexp: '^Listen.*'
+        replace: ''
+      notify: restart apache
 
-    - name: Change Apache default VirtualHost to port 8080
+    - name: Add correct Apache listen port
+      lineinfile:
+        path: /etc/apache2/ports.conf
+        line: "Listen {{ apache_port }}"
+      notify: restart apache
+
+    - name: Update Apache VirtualHost to new port
       replace:
-        path: /etc/apache2/sites-enabled/000-default.conf
-        regexp: '<VirtualHost \\*:80>'
-        replace: '<VirtualHost *:8080>'
+        path: /etc/apache2/sites-available/000-default.conf
+        regexp: '<VirtualHost \\*:.*>'
+        replace: '<VirtualHost *:{{ apache_port }}>'
+      notify: restart apache
 
-    - name: Restart apache to apply new port
-      service:
-        name: apache2
-        state: restarted
+    # ------------ DOWNLOAD + INSTALL NAGIOS CORE ------------
 
     - name: Download Nagios Core
       get_url:
@@ -55,7 +65,7 @@
     - name: Compile and install Nagios Core
       shell: |
         cd /tmp/nagios-4.*
-        ./configure --with-httpd-conf=/etc/apache2/sites-enabled
+        ./configure --with-httpd-conf=/etc/apache2/sites-available
         make all
         make install-groups-users
         usermod -aG nagios www-data
@@ -72,19 +82,84 @@
       args:
         warn: false
 
+    # ------------ MONITORING CONFIG ADD-ONS ------------
+
+    - name: Add basic system monitoring commands
+      copy:
+        dest: /usr/local/nagios/etc/objects/custom_checks.cfg
+        content: |
+          define command {
+            command_name    check_cpu
+            command_line    /usr/lib/nagios/plugins/check_load -w 5 -c 10
+          }
+
+          define command {
+            command_name    check_disk
+            command_line    /usr/lib/nagios/plugins/check_disk -w 20% -c 10% -p /
+          }
+
+          define command {
+            command_name    check_ram
+            command_line    /usr/lib/nagios/plugins/check_mem -w 20 -c 10
+          }
+
+          define command {
+            command_name    check_nginx
+            command_line    /usr/lib/nagios/plugins/check_http -p 80 -H localhost
+          }
+
+          define service {
+            use                     generic-service
+            host_name               localhost
+            service_description     CPU Load
+            check_command           check_cpu
+          }
+
+          define service {
+            use                     generic-service
+            host_name               localhost
+            service_description     Disk Usage
+            check_command           check_disk
+          }
+
+          define service {
+            use                     generic-service
+            host_name               localhost
+            service_description     RAM Usage
+            check_command           check_ram
+          }
+
+          define service {
+            use                     generic-service
+            host_name               localhost
+            service_description     Nginx Status
+            check_command           check_nginx
+          }
+
+    - name: Include custom checks in Nagios config
+      lineinfile:
+        path: /usr/local/nagios/etc/nagios.cfg
+        line: "cfg_file=/usr/local/nagios/etc/objects/custom_checks.cfg"
+
+    # ------------ ENABLE APACHE MODULES ------------
+
     - name: Enable Apache modules
       shell: a2enmod cgi rewrite
       args:
         warn: false
+      notify: restart apache
 
-    - name: Restart Apache & Nagios
-      service:
-        name: apache2
-        state: restarted
-        enabled: yes
+    # ------------ START SERVICES ------------
 
     - name: Start Nagios service
       service:
         name: nagios
         state: started
         enabled: yes
+
+  handlers:
+    - name: restart apache
+      service:
+        name: apache2
+        state: restarted
+
